@@ -2,47 +2,84 @@ package main
 
 import (
 	"bufio"
+	"strings"
+
+	"compress/gzip"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
-	"strings"
+	"path/filepath"
+
+	"flag"
 )
 
+var header string = "date,time,x-edge-location,sc-bytes,c-ip,cs-method,cs(Host),cs-uri-stem,sc-status,cs(Referer),cs(User-Agent),cs-uri-query,cs(Cookie),x-edge-result-type,x-edge-request-id,x-host-header,cs-protocol,cs-bytes,time-taken,x-forwarded-for,ssl-protocol,ssl-cipher,x-edge-response-result-type,cs-protocol-version,fle-status,fle-encrypted-fields,c-port,time-to-first-byte,x-edge-detailed-result-type,sc-content-type,sc-content-len,sc-range-start,sc-range-end"
+
 func processLine(text string, output *[]string) {
-	s := strings.Fields(text)
-
-	if strings.HasPrefix(s[0], "#") {
-		s = s[1:]
+	if strings.HasPrefix(text, "#") {
+		return
 	}
-
+	s := strings.Fields(text)
+	if len(s) == 0 {
+		return
+	}
 	o := fmt.Sprint(strings.Join(s[:], ","))
 	*output = append(*output, o)
 }
 
-func main() {
-	var output []string
+func gunzip(src string) ([]byte, error) {
+	f, err := os.Open(src)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
 
-	infile, err := os.Open("log.txt")
+	gzf, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	defer gzf.Close()
+
+	fileContents, err := ioutil.ReadAll(gzf)
+	if err != nil {
+		return nil, err
+	}
+
+	return fileContents, nil
+}
+
+func main() {
+	inputDir := flag.String("i", "", "input directory path")
+	outputFilename := flag.String("o", "output.csv", "output CSV file")
+
+	flag.Parse()
+
+	if *inputDir == "" {
+		flag.Usage()
+		return
+	}
+
+	output := []string{header}
+
+	files, err := ioutil.ReadDir(*inputDir)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	defer infile.Close()
-
-	reader := bufio.NewScanner(infile)
-	for i := 0; reader.Scan(); i++ {
-		if i == 0 {
-			continue
+	for _, f := range files {
+		if !f.IsDir() && strings.HasSuffix(f.Name(), ".gz") {
+			filePath := filepath.Join(*inputDir, f.Name())
+			if content, err := gunzip(filePath); err == nil {
+				lines := strings.Split(string(content), "\n")
+				for _, line := range lines {
+					processLine(line, &output)
+				}
+			}
 		}
-		line := reader.Text()
-		processLine(line, &output)
 	}
 
-	if err := reader.Err(); err != nil {
-		log.Fatal(err)
-	}
-
-	outfile, err := os.OpenFile("output.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	outfile, err := os.OpenFile(*outputFilename, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -50,10 +87,8 @@ func main() {
 
 	writer := bufio.NewWriter(outfile)
 
-	for _, data := range output {
-		_, _ = writer.WriteString(data + "\n")
-	}
-
+	writer.WriteString(strings.Join(output, "\n"))
 	writer.Flush()
-	fmt.Println("done.")
+
+	fmt.Println("Ok, done.")
 }
